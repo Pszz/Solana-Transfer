@@ -10,13 +10,20 @@ import {
   SystemProgram,
   TransactionInstruction,
 } from '@solana/web3.js';
-
+import { Token, TOKEN_PROGRAM_ID } from '@solana/spl-token';
+const SPL_ASSOCIATED_TOKEN_ACCOUNT_PROGRAM_ID = new PublicKey(
+  'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL',
+);
 interface ITransferProps {
   from: string;
   to: string;
   tokenAddress: string;
   amount: BigNumber;
+  decimals: number;
 }
+const toPublicKey = (key: string) => {
+  return new PublicKey(key);
+};
 class SolWallet {
   private wallet: any = null;
   private connection: Connection;
@@ -115,61 +122,127 @@ class SolWallet {
       return Promise.reject(`transfer error:${err}`);
     }
   }
+  sendRawTransaction = async (
+    instructions: TransactionInstruction[],
+    feePayer: string,
+  ) => {
+    const transaction = new Transaction();
+    instructions.forEach((instruction) => {
+      transaction.add(instruction);
+    });
+    transaction.recentBlockhash = (
+      await this.connection.getRecentBlockhash('max')
+    ).blockhash;
+    transaction.feePayer = new PublicKey(feePayer);
+    const signedTransaction = await this.wallet.signTransaction(transaction);
+    const tx = await this.connection.sendRawTransaction(
+      signedTransaction.serialize(),
+    );
+    console.log('tx----------->', tx);
+    return tx;
+  };
+  async createAccountInstructions(
+    owner: PublicKey,
+    walletAddress: string,
+    mint: PublicKey,
+    instructions: TransactionInstruction[],
+  ) {
+    if (!walletAddress) {
+      return console.error('not wallet');
+    }
+    const associatedAddress = await Token.getAssociatedTokenAddress(
+      SPL_ASSOCIATED_TOKEN_ACCOUNT_PROGRAM_ID,
+      TOKEN_PROGRAM_ID,
+      mint,
+      owner,
+    );
+    const payer = toPublicKey(walletAddress);
+
+    instructions.push(
+      Token.createAssociatedTokenAccountInstruction(
+        SPL_ASSOCIATED_TOKEN_ACCOUNT_PROGRAM_ID,
+        TOKEN_PROGRAM_ID,
+        mint,
+        associatedAddress,
+        owner,
+        payer,
+      ),
+    );
+    return associatedAddress;
+  }
   /**
    * Token 转账
    * @param param0
    */
-  async transferToken({ from, to, amount, tokenAddress }: ITransferProps) {
+  async transferToken({
+    from,
+    to,
+    amount,
+    tokenAddress,
+    decimals,
+  }: ITransferProps) {
     const _from: PublicKey = new PublicKey(from);
-    const _to: PublicKey = new PublicKey(to);
-    // 创建交易实例
     const transaction = new Transaction();
 
-    // 手续费支付者
+    const _amount = parseFloat(
+      new BigNumber(10)
+        .pow(decimals)
+        .multipliedBy(amount.toNumber())
+        .toFixed(6),
+    );
+    console.log(
+      `from:${from}, to:${to}, amount: ${amount.toNumber()}, _amount: ${_amount}`,
+    );
     transaction.feePayer = _from;
     if (!tokenAddress) Promise.reject('tokenAddress Required');
     const ERC20_TOKEN = new PublicKey(tokenAddress);
-    // Token Account代币
-    const fromTokenAccount = await this.getTokenAccount(ERC20_TOKEN, _from);
-    const toTokenAccount = await this.getTokenAccount(ERC20_TOKEN, _to);
 
-    console.log('token:', ERC20_TOKEN.toString());
-    console.log('from:', fromTokenAccount.toString(), _from.toString());
-    console.log('to:', toTokenAccount.toString(), _to.toString());
-
+    const address = _from.toString();
+    const mint = ERC20_TOKEN;
+    const myAssociatedAddress = await Token.getAssociatedTokenAddress(
+      SPL_ASSOCIATED_TOKEN_ACCOUNT_PROGRAM_ID,
+      TOKEN_PROGRAM_ID,
+      mint,
+      toPublicKey(address),
+    );
+    const toAssociatedAddress = await Token.getAssociatedTokenAddress(
+      SPL_ASSOCIATED_TOKEN_ACCOUNT_PROGRAM_ID,
+      TOKEN_PROGRAM_ID,
+      mint,
+      toPublicKey(to),
+    );
+    const toAssociatedAccount = await this.connection.getTokenAccountsByOwner(
+      toPublicKey(to),
+      {
+        mint: mint,
+      },
+    );
+    if (!toAssociatedAccount) {
+      return console.error('not toAssociatedAccount');
+    }
     const instructions: TransactionInstruction[] = [];
-    const toAccount = SystemProgram.createAccount({
-      fromPubkey: this.wallet.publicKey, // 付款人地址
-      newAccountPubkey: toTokenAccount, // 收款人Account
-      lamports: await this.connection.getMinimumBalanceForRentExemption(
-        SPL.AccountLayout.span,
+    if (toAssociatedAccount.value.length === 0) {
+      await this.createAccountInstructions(
+        toPublicKey(to),
+        address,
+        mint,
+        instructions,
+      );
+    }
+    if (!toAssociatedAddress) {
+      return console.error('error toAssociatedAddress');
+    }
+    instructions.push(
+      Token.createTransferInstruction(
+        TOKEN_PROGRAM_ID,
+        myAssociatedAddress,
+        toAssociatedAddress,
+        toPublicKey(address),
+        [],
+        _amount,
       ),
-      space: SPL.AccountLayout.span,
-      programId: SPL.TOKEN_PROGRAM_ID,
-    });
-    // 初始化账户指令 => 相当于银行卡给对方
-    const instruction = SPL.Token.createInitAccountInstruction(
-      SPL.TOKEN_PROGRAM_ID,
-      ERC20_TOKEN,
-      toTokenAccount,
-      _to,
     );
-    instructions.push(toAccount);
-    instructions.push(instruction);
-
-    // 初始化交易指令 => 准备打钱给对方
-    const transfer = SPL.Token.createTransferInstruction(
-      SPL.TOKEN_PROGRAM_ID,
-      fromTokenAccount,
-      toTokenAccount,
-      _from,
-      [],
-      amount.multipliedBy(1e9).toNumber(),
-    );
-    console.log('amount:', amount.multipliedBy(1e9).toNumber());
-    instructions.push(transfer);
-
-    return this.sendTransation(instructions, _from);
+    return this.sendRawTransaction(instructions, address);
   }
   /**
    * Transfer

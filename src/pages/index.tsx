@@ -25,6 +25,7 @@ export default function IndexPage() {
       to,
       tokenAddress,
       amount: new BigNumber(amount),
+      decimals: 9,
     });
   };
   const handleConnect = () => {
@@ -93,6 +94,9 @@ export default function IndexPage() {
               <Option value="">SOL</Option>
               <Option value="GRZyd5BAUYJP8Ti9jdFnRKF9Fw3GdZQuuZmVh4xXmoSx">
                 Token1
+              </Option>
+              <Option value="BkfWNsq3papRx1JXTxBVtCHmr1UhZGNrXEvDM4UmmGEs">
+                LeftCatToken
               </Option>
             </Select>
           </Form.Item>
